@@ -69,6 +69,7 @@ struct hidpp20drv_data {
 	unsigned num_controls;
 	struct hidpp20_control_id *controls;
 	struct hidpp20_profiles *profiles;
+	struct hidpp20_led *leds;
 	union hidpp20_generic_led_zone_info led_infos;
 
 	unsigned int report_rates[4];
@@ -334,14 +335,24 @@ static void
 hidpp20drv_read_led_8070(struct ratbag_led *led, struct hidpp20drv_data* drv_data)
 {
 	struct hidpp20_profile *profile;
-	struct hidpp20_led *h_led;
+	struct hidpp20_led h_led_val;
+	struct hidpp20_led *h_led = &h_led_val;
 	struct hidpp20_color_led_zone_info* led_info;
 	struct hidpp20_color_led_info info;
 	int rc;
 
 	led_info = &drv_data->led_infos.color_leds_8070[led->index];
-	profile = &drv_data->profiles->profiles[led->profile->index];
-	h_led = &profile->leds[led->index];
+
+	if (drv_data->capabilities & HIDPP_CAP_ONBOARD_PROFILES_8100) {
+		profile = &drv_data->profiles->profiles[led->profile->index];
+		h_led = &profile->leds[led->index];
+	} else {
+		rc = hidpp20_color_led_effects_get_zone_effect(drv_data->dev, led->index, h_led);
+		if (rc) {
+			log_debug(led->profile->device->ratbag,
+				  "Failed to read led settings\n");
+		}
+	}
 
 	switch (h_led->mode) {
 	case HIDPP20_LED_ON:
@@ -397,10 +408,10 @@ hidpp20drv_read_led_8070(struct ratbag_led *led, struct hidpp20drv_data* drv_dat
 			ratbag_led_set_mode_capability(led, RATBAG_LED_BREATHING);
 			break;
 		default:
-			log_bug_libratbag(led->profile->device->ratbag,
-					  "%s: Unknown effect id %d\n",
-					  led->profile->device->name,
-					  ei.effect_id);
+			log_debug(led->profile->device->ratbag,
+				  "%s: Unsupported effect (%d)\n",
+				  led->profile->device->name,
+				  ei.effect_id);
 			break;
 		}
 	}
@@ -472,10 +483,10 @@ hidpp20drv_read_led_8071(struct ratbag_led *led, struct hidpp20drv_data* drv_dat
 			ratbag_led_set_mode_capability(led, RATBAG_LED_BREATHING);
 			break;
 		default:
-			log_bug_libratbag(led->profile->device->ratbag,
-					  "%s: Unknown effect id %d\n",
-					  led->profile->device->name,
-					  ei.effect_id);
+			log_debug(led->profile->device->ratbag,
+				  "%s: Unsupported effect (%d)\n",
+				  led->profile->device->name,
+				  ei.effect_id);
 			break;
 		}
 	}
@@ -564,7 +575,7 @@ hidpp20drv_update_button_8100(struct ratbag_button *button)
 		code = ratbag_hidraw_get_keyboard_usage_from_keycode(device, key);
 		if (code == 0) {
 			subtype = HIDPP20_BUTTON_HID_TYPE_CONSUMER_CONTROL;
-			code = ratbag_hidraw_get_consumer_usage_from_keycode(device, action->action.key.key);
+			code = ratbag_hidraw_get_consumer_usage_from_keycode(device, key);
 			if (code == 0)
 				return -EINVAL;
 		}
@@ -691,11 +702,13 @@ hidpp20drv_update_led_8070_8071(struct ratbag_led *led, struct ratbag_profile* p
 				struct hidpp20drv_data *drv_data)
 {
 	struct hidpp20_profile *h_profile;
-	struct hidpp20_led *h_led;
+	struct hidpp20_led h_led_val;
+	struct hidpp20_led *h_led = &h_led_val;
 
-	h_profile = &drv_data->profiles->profiles[profile->index];
-
-	h_led = &(h_profile->leds[led->index]);
+	if (drv_data->capabilities & HIDPP_CAP_ONBOARD_PROFILES_8100) {
+		h_profile = &drv_data->profiles->profiles[profile->index];
+		h_led = &(h_profile->leds[led->index]);
+	}
 
 	if (!h_led)
 		return -EINVAL;
@@ -719,6 +732,13 @@ hidpp20drv_update_led_8070_8071(struct ratbag_led *led, struct ratbag_profile* p
 	h_led->color.blue = led->color.blue;
 	h_led->period = led->ms;
 	h_led->brightness = led->brightness * 100 / 255;
+
+	if (!(drv_data->capabilities & HIDPP_CAP_ONBOARD_PROFILES_8100)) {
+		if (drv_data->capabilities & HIDPP_CAP_COLOR_LED_EFFECTS_8070)
+			hidpp20_color_led_effects_set_zone_effect(drv_data->dev,
+								  led->index,
+								  h_led_val);
+	}
 
 	return RATBAG_SUCCESS;
 }
@@ -822,9 +842,12 @@ hidpp20drv_read_report_rate_8060(struct ratbag_device *device)
 {
 	struct hidpp20drv_data *drv_data = ratbag_get_drv_data(device);
 	struct ratbag *ratbag = device->ratbag;
+	struct ratbag_profile *profile;
 	uint8_t bitflags_ms;
 	int nrates = 0;
 	int rc;
+	uint8_t rate_ms;
+	unsigned rate_hz;
 
 	rc = hidpp20_adjustable_report_rate_get_report_rate_list(drv_data->dev,
 								 &bitflags_ms);
@@ -842,6 +865,37 @@ hidpp20drv_read_report_rate_8060(struct ratbag_device *device)
 		drv_data->report_rates[nrates++] = 1000;
 
 	drv_data->num_report_rates = nrates;
+
+	if (!hidpp20_adjustable_report_rate_get_report_rate(drv_data->dev, &rate_ms)) {
+		switch (rate_ms)
+		{
+		case 1:
+			rate_hz = 1000;
+			break;
+		case 2:
+		case 3: /* 3ms = 333.(3)Hz, we round to 500Hz */
+			rate_hz = 500;
+			break;
+		case 4:
+		case 5: /* 5ms = 200Hz, we round to 250Hz */
+			rate_hz = 250;
+			break;
+		case 6: /* 6ms = 166.(6)Hz, we round to 125Hz */
+		case 7: /* 7ms = 142Hz, we round to 125Hz */
+		case 8:
+			rate_hz = 125;
+			break;
+		default:
+			rate_hz = 0;
+			break;
+		}
+
+		if (rate_hz) {
+			log_debug(ratbag, "report rate is %u\n", rate_hz);
+			ratbag_device_for_each_profile(device, profile)
+				profile->hz = rate_hz;
+		}
+	}
 
 	log_debug(ratbag, "device has %d report rates\n", nrates);
 
@@ -943,7 +997,7 @@ hidpp20drv_update_resolution_dpi(struct ratbag_resolution *resolution,
 	struct ratbag_device *device = profile->device;
 	struct hidpp20drv_data *drv_data = ratbag_get_drv_data(device);
 	struct hidpp20_sensor *sensor;
-	int rc, i;
+	int i;
 	int dpi = dpi_x; /* dpi_x == dpi_y if we don't have the individual resolution cap */
 
 	if (drv_data->capabilities & HIDPP_CAP_ONBOARD_PROFILES_8100)
@@ -959,14 +1013,13 @@ hidpp20drv_update_resolution_dpi(struct ratbag_resolution *resolution,
 	sensor = &drv_data->sensors[0];
 
 	/* validate that the sensor accepts the given DPI */
-	rc = -EINVAL;
 	if (dpi < sensor->dpi_min || dpi > sensor->dpi_max)
-		goto out;
+		return -EINVAL;
 	if (sensor->dpi_steps) {
 		for (i = sensor->dpi_min; i < dpi; i += sensor->dpi_steps) {
 		}
 		if (i != dpi)
-			goto out;
+			return -EINVAL;
 	} else {
 		i = 0;
 		while (sensor->dpi_list[i]) {
@@ -974,13 +1027,24 @@ hidpp20drv_update_resolution_dpi(struct ratbag_resolution *resolution,
 				break;
 		}
 		if (sensor->dpi_list[i] != dpi)
-			goto out;
+			return -EINVAL;
 	}
 
-	rc = hidpp20_adjustable_dpi_set_sensor_dpi(drv_data->dev, sensor, dpi);
+	return hidpp20_adjustable_dpi_set_sensor_dpi(drv_data->dev, sensor, dpi);
+}
 
-out:
-	return rc;
+static int
+hidpp20drv_update_report_rate_8060(struct ratbag_profile *profile, int hz)
+{
+	struct ratbag_device *device = profile->device;
+	struct hidpp20drv_data *drv_data = ratbag_get_drv_data(device);
+	int rc;
+
+	rc = hidpp20_adjustable_report_rate_set_report_rate(drv_data->dev, 1000/hz);
+	if (rc)
+		return rc;
+
+	return RATBAG_SUCCESS;
 }
 
 static int
@@ -1001,12 +1065,20 @@ hidpp20drv_update_report_rate(struct ratbag_profile *profile, int hz)
 {
 	struct ratbag_device *device = profile->device;
 	struct hidpp20drv_data *drv_data = ratbag_get_drv_data(device);
+	int rc;
 
 	if (drv_data->capabilities & HIDPP_CAP_ONBOARD_PROFILES_8100)
 		return hidpp20drv_update_report_rate_8100(profile, hz);
 
-	if (drv_data->capabilities & HIDPP_CAP_ADJUSTIBLE_REPORT_RATE_8060)
-		return -ENOTSUP;
+	if (drv_data->capabilities & HIDPP_CAP_ADJUSTIBLE_REPORT_RATE_8060) {
+		rc = hidpp20drv_update_report_rate_8060(profile, hz);
+
+		/* re-populate the profile with the correct value if we fail */
+		if (rc)
+			hidpp20drv_read_report_rate_8060(profile->device);
+
+		return rc;
+	}
 
 	return -ENOTSUP;
 }
@@ -1179,6 +1251,60 @@ hidpp20drv_read_profile_8100(struct ratbag_profile *profile)
 	ratbag_profile_set_report_rate(profile, p->report_rate);
 }
 
+static int
+hidpp20drv_init_leds_8070_8071(struct ratbag_device *device)
+{
+	struct hidpp20drv_data *drv_data = ratbag_get_drv_data(device);
+	struct ratbag *ratbag = device->ratbag;
+
+	/* we only support 0x8071 via 0x8100 */
+	if (!(drv_data->capabilities & HIDPP_CAP_ONBOARD_PROFILES_8100) &&
+	    drv_data->capabilities & HIDPP_CAP_RGB_EFFECTS_8071) {
+		log_debug(ratbag, "disabling 0x8071 (RGB Effects) feature because the device doesn't have 0x8100 (Onboard Memory Profiles)\n");
+		drv_data->capabilities &= ~HIDPP_CAP_RGB_EFFECTS_8071;
+	}
+
+	if (drv_data->capabilities & HIDPP_CAP_COLOR_LED_EFFECTS_8070 ||
+	    drv_data->capabilities & HIDPP_CAP_RGB_EFFECTS_8071) {
+		/* we read the profile once to get the correct number of
+		 * supported leds. */
+		if (hidpp20drv_read_color_leds(device))
+			return 0;
+
+		device->num_leds = drv_data->num_leds;
+	}
+
+	return 0;
+}
+
+static int
+hidpp20drv_init_profile_8100(struct ratbag_device *device)
+{
+	struct hidpp20drv_data *drv_data = ratbag_get_drv_data(device);
+	struct ratbag *ratbag = device->ratbag;
+	int rc;
+
+	log_debug(ratbag, "initializing onboard profiles\n");
+	rc = hidpp20_onboard_profiles_allocate(drv_data->dev, &drv_data->profiles);
+	if (rc < 0)
+		return rc;
+
+	rc = hidpp20_onboard_profiles_initialize(drv_data->dev, drv_data->profiles);
+	if (rc < 0)
+		return rc;
+
+	drv_data->num_profiles = drv_data->profiles->num_profiles;
+	drv_data->num_buttons = drv_data->profiles->num_buttons;
+
+	if (drv_data->capabilities & HIDPP_CAP_SWITCHABLE_RESOLUTION_2201)
+		drv_data->num_resolutions = drv_data->profiles->num_modes;
+	/* We ignore the profile's num_leds and require
+	* HIDPP_PAGE_COLOR_LED_EFFECTS to succeed instead
+	*/
+
+	return 0;
+}
+
 static void
 hidpp20drv_read_profile(struct ratbag_profile *profile)
 {
@@ -1313,25 +1439,11 @@ hidpp20drv_init_feature(struct ratbag_device *device, uint16_t feature)
 
 		log_debug(ratbag, "device has color effects\n");
 		drv_data->capabilities |= HIDPP_CAP_COLOR_LED_EFFECTS_8070;
-
-		/* we read the profile once to get the correct number of
-		 * supported leds. */
-		if (hidpp20drv_read_color_leds(device))
-			return 0;
-
-		device->num_leds = drv_data->num_leds;
 		break;
 	}
 	case HIDPP_PAGE_RGB_EFFECTS: {
 		log_debug(ratbag, "device has color effects\n");
 		drv_data->capabilities |= HIDPP_CAP_RGB_EFFECTS_8071;
-
-		/* we read the profile once to get the correct number of
-		 * supported leds. */
-		if (hidpp20drv_read_color_leds(device))
-			return 0;
-
-		device->num_leds = drv_data->num_leds;
 		break;
 	}
 	case HIDPP_PAGE_LED_SW_CONTROL: {
@@ -1349,22 +1461,6 @@ hidpp20drv_init_feature(struct ratbag_device *device, uint16_t feature)
 	case HIDPP_PAGE_ONBOARD_PROFILES: {
 		log_debug(ratbag, "device has onboard profiles\n");
 		drv_data->capabilities |= HIDPP_CAP_ONBOARD_PROFILES_8100;
-
-		rc = hidpp20_onboard_profiles_allocate(drv_data->dev, &drv_data->profiles);
-		if (rc < 0)
-			return rc;
-
-		rc = hidpp20_onboard_profiles_initialize(drv_data->dev, drv_data->profiles);
-		if (rc < 0)
-			return rc;
-
-		drv_data->num_profiles = drv_data->profiles->num_profiles;
-		drv_data->num_resolutions = drv_data->profiles->num_modes;
-		drv_data->num_buttons = drv_data->profiles->num_buttons;
-		/* We ignore the profile's num_leds and require
-		 * HIDPP_PAGE_COLOR_LED_EFFECTS to succeed instead
-		 */
-
 		break;
 	}
 	case HIDPP_PAGE_MOUSE_BUTTON_SPY: {
@@ -1386,27 +1482,27 @@ hidpp20drv_commit(struct ratbag_device *device)
 	struct ratbag_led *led;
 	struct ratbag_resolution *resolution;
 	int rc;
-	unsigned int dpi_index = 0;
 
 	list_for_each(profile, &device->profiles, link) {
 		if (!profile->dirty)
 			continue;
 
-		rc = hidpp20drv_update_report_rate(profile, profile->hz);
-		if (rc)
-			return RATBAG_ERROR_DEVICE;
+		if (profile->rate_dirty) {
+			rc = hidpp20drv_update_report_rate(profile, profile->hz);
+			if (rc) {
+				log_error(device->ratbag, "hidpp20: failed to update report rate (%d)\n", rc);
+				return RATBAG_ERROR_DEVICE;
+			}
+		}
 
 		ratbag_profile_for_each_resolution(profile, resolution) {
-			if (resolution->is_active) {
-				log_raw(device->ratbag, "dpi index: %d, profile %d\n", resolution->index, profile->index);
-				dpi_index = resolution->index;
-			}
-
 			rc = hidpp20drv_update_resolution_dpi(resolution,
 							      resolution->dpi_x,
 							      resolution->dpi_y);
-			if (rc)
+			if (rc) {
+				log_error(device->ratbag, "hidpp20: failed to update resolution (%d)\n", rc);
 				return RATBAG_ERROR_DEVICE;
+			}
 		}
 
 		list_for_each(button, &profile->buttons, link) {
@@ -1414,8 +1510,10 @@ hidpp20drv_commit(struct ratbag_device *device)
 				continue;
 
 			rc = hidpp20drv_update_button(button);
-			if (rc)
+			if (rc) {
+				log_error(device->ratbag, "hidpp20: failed to update button (%d)\n", rc);
 				return RATBAG_ERROR_DEVICE;
+			}
 		}
 
 		list_for_each(led, &profile->leds, link) {
@@ -1423,10 +1521,11 @@ hidpp20drv_commit(struct ratbag_device *device)
 				continue;
 
 			rc = hidpp20drv_update_led(led);
-			if (rc)
+			if (rc) {
+				log_error(device->ratbag, "hidpp20: failed to update led (%d)\n", rc);
 				return RATBAG_ERROR_DEVICE;
+			}
 		}
-
 	}
 
 	if (drv_data->capabilities & HIDPP_CAP_ONBOARD_PROFILES_8100) {
@@ -1435,17 +1534,18 @@ hidpp20drv_commit(struct ratbag_device *device)
 
 		rc = hidpp20_onboard_profiles_commit(drv_data->dev,
 						     drv_data->profiles);
-		if (rc)
+		if (rc) {
+			log_error(device->ratbag, "hidpp20: failed to commit profile (%d)\n", rc);
 			return RATBAG_ERROR_DEVICE;
+		}
 
 		list_for_each(profile, &device->profiles, link) {
 			if (profile->is_active) {
 				ratbag_profile_for_each_resolution(profile, resolution) {
 					if (resolution->is_active)
-						dpi_index = resolution->index;
+						hidpp20_onboard_profiles_set_current_dpi_index(drv_data->dev,
+											       resolution->index);
 				}
-				hidpp20_onboard_profiles_set_current_dpi_index(drv_data->dev,
-									       dpi_index);
 			}
 		}
 	}
@@ -1476,8 +1576,21 @@ hidpp20drv_20_probe(struct ratbag_device *device)
 			return rc;
 	}
 
-	return 0;
+	/* initializations that depend on other features */
+	if (drv_data->capabilities & HIDPP_CAP_COLOR_LED_EFFECTS_8070 ||
+	    drv_data->capabilities & HIDPP_CAP_RGB_EFFECTS_8071) {
+		rc = hidpp20drv_init_leds_8070_8071(device);
+		if (rc < 0)
+			return rc;
+	}
 
+	if (drv_data->capabilities & HIDPP_CAP_ONBOARD_PROFILES_8100) {
+		rc = hidpp20drv_init_profile_8100(device);
+		if (rc < 0)
+			return rc;
+	}
+
+	return 0;
 }
 
 static int
@@ -1509,9 +1622,9 @@ hidpp20drv_remove(struct ratbag_device *device)
 	if (drv_data->profiles)
 		hidpp20_onboard_profiles_destroy(drv_data->profiles);
 	free(drv_data->led_infos.color_leds_8070);
-	free(drv_data->led_infos.color_leds_8071);
 	free(drv_data->controls);
 	free(drv_data->sensors);
+	free(drv_data->leds);
 	if (drv_data->dev)
 		hidpp20_device_destroy(drv_data->dev);
 	free(drv_data);
@@ -1523,6 +1636,11 @@ hidpp20drv_init_device(struct ratbag_device *device,
 {
 	struct ratbag_profile *profile;
 	bool active_profile = false;
+	int num;
+
+	num = ratbag_device_data_hidpp20_get_led_count(device->data);
+	if (num >= 0)
+		drv_data->num_leds = num;
 
 	ratbag_device_init_profiles(device,
 				    drv_data->num_profiles,
@@ -1576,7 +1694,7 @@ hidpp20drv_probe(struct ratbag_device *device)
 	 * If there is a special need like for G900, we can add this in the
 	 * device data file.
 	 */
-	dev = hidpp20_device_new(&base, device_idx);
+	dev = hidpp20_device_new(&base, device_idx, (struct hidpp_hid_report*) device->hidraw[0].reports, device->hidraw[0].num_reports);
 	if (!dev) {
 		rc = -ENODEV;
 		goto err;
@@ -1593,7 +1711,7 @@ hidpp20drv_probe(struct ratbag_device *device)
 
 	/* add some defaults that will be overwritten by the device */
 	drv_data->num_profiles = 1;
-	drv_data->num_resolutions = 1;
+	drv_data->num_resolutions = 0;
 	drv_data->num_buttons = 8;
 	drv_data->num_leds = 0;
 

@@ -71,17 +71,29 @@ ratbag_default_log_func(struct ratbag *ratbag,
 			const char *format, va_list args)
 {
 	const char *prefix;
+	FILE *out = stdout;
 
 	switch(priority) {
-	case RATBAG_LOG_PRIORITY_RAW: prefix = "raw"; break;
-	case RATBAG_LOG_PRIORITY_DEBUG: prefix = "debug"; break;
-	case RATBAG_LOG_PRIORITY_INFO: prefix = "info"; break;
-	case RATBAG_LOG_PRIORITY_ERROR: prefix = "error"; break;
-	default: prefix="<invalid priority>"; break;
+	case RATBAG_LOG_PRIORITY_RAW:
+		prefix = "raw";
+		break;
+	case RATBAG_LOG_PRIORITY_DEBUG:
+		prefix = "debug";
+		break;
+	case RATBAG_LOG_PRIORITY_INFO:
+		prefix = "info";
+		break;
+	case RATBAG_LOG_PRIORITY_ERROR:
+		prefix = "error";
+		out = stderr;
+		break;
+	default:
+		prefix="<invalid priority>";
+		break;
 	}
 
-	fprintf(stderr, "ratbag %s: ", prefix);
-	vfprintf(stderr, format, args);
+	fprintf(out, "ratbag %s: ", prefix);
+	vfprintf(out, format, args);
 }
 
 void
@@ -256,7 +268,7 @@ ratbag_sanity_check_device(struct ratbag_device *device)
 		}
 
 		nres = ratbag_profile_get_num_resolutions(profile);
-		if (nres == 0 || nres > 16) {
+		if (nres > 16) {
 				log_bug_libratbag(ratbag,
 						  "%s: invalid number of resolutions (%d)\n",
 						  device->name,
@@ -590,6 +602,7 @@ ratbag_create_context(const struct ratbag_interface *interface,
 	ratbag_register_driver(ratbag, &roccat_driver);
 	ratbag_register_driver(ratbag, &gskill_driver);
 	ratbag_register_driver(ratbag, &steelseries_driver);
+	ratbag_register_driver(ratbag, &sinowealth_driver);
 
 	return ratbag;
 }
@@ -937,6 +950,8 @@ ratbag_device_commit(struct ratbag_device *device)
 	list_for_each(profile, &device->profiles, link) {
 		profile->dirty = false;
 
+		profile->rate_dirty = false;
+
 		list_for_each(button, &profile->buttons, link)
 			button->dirty = false;
 
@@ -1105,6 +1120,7 @@ ratbag_profile_set_report_rate(struct ratbag_profile *profile,
 	if (profile->hz != hz) {
 		profile->hz = hz;
 		profile->dirty = true;
+		profile->rate_dirty = true;
 	}
 
 	return RATBAG_SUCCESS;

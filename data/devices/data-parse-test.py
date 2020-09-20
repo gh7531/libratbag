@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# vim: set expandtab shiftwidth=4 tabstop=4:
 #
 # Copyright © 2017 Red Hat, Inc.
 #
@@ -58,7 +57,7 @@ def check_match_str(string):
 
 
 def check_ledtypes_str(string):
-    permitted_types = ['logo', 'side', 'battery', 'dpi']
+    permitted_types = ['logo', 'side', 'battery', 'dpi', 'switches']
 
     types = string.split(';')
     for t in types:
@@ -138,9 +137,8 @@ def check_section_hidpp10(section):
         pass
 
     try:
-        index = int(section['DeviceIndex'])
-        # 10 is arbitrarily chosen
-        assert(index > 0 and index < 10)
+        index = int(section['DeviceIndex'], 16)
+        assert(index > 0 and index <= 0xff)
     except KeyError:
         pass
 
@@ -170,14 +168,13 @@ def check_section_hidpp10(section):
 
 
 def check_section_hidpp20(section):
-    permitted = ['DeviceIndex', 'Quirk']
+    permitted = ['DeviceIndex', 'Leds', 'Quirk']
     for key in section.keys():
         assertIn(key, permitted)
 
     try:
-        index = int(section['DeviceIndex'])
-        # 10 is arbitrarily chosen
-        assert(index > 0 and index < 10)
+        index = int(section['DeviceIndex'], 16)
+        assert(index > 0 and index <= 0xff)
     except KeyError:
         pass
 

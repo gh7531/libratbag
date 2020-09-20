@@ -23,6 +23,7 @@
 
 #pragma once
 
+#include "config.h"
 #include <linux/input.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -295,6 +296,7 @@ struct ratbag_profile {
 	unsigned int hz;	/**< report rate in Hz */
 	unsigned int rates[8];	/**< report rates available */
 	size_t nrates;		/**< number of entries in rates */
+	bool rate_dirty;
 
 	unsigned int num_resolutions;
 
@@ -585,14 +587,15 @@ ratbag_led_set_mode_capability(struct ratbag_led *led,
 }
 
 /* list of all supported drivers */
-struct ratbag_driver etekcity_driver;
-struct ratbag_driver hidpp20_driver;
-struct ratbag_driver hidpp10_driver;
-struct ratbag_driver logitech_g300_driver;
-struct ratbag_driver logitech_g600_driver;
-struct ratbag_driver roccat_driver;
-struct ratbag_driver gskill_driver;
-struct ratbag_driver steelseries_driver;
+extern struct ratbag_driver etekcity_driver;
+extern struct ratbag_driver hidpp20_driver;
+extern struct ratbag_driver hidpp10_driver;
+extern struct ratbag_driver logitech_g300_driver;
+extern struct ratbag_driver logitech_g600_driver;
+extern struct ratbag_driver roccat_driver;
+extern struct ratbag_driver gskill_driver;
+extern struct ratbag_driver steelseries_driver;
+extern struct ratbag_driver sinowealth_driver;
 
 struct ratbag_device*
 ratbag_device_new(struct ratbag *ratbag, struct udev_device *udev_device,

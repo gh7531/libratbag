@@ -1,6 +1,4 @@
-# vim: set expandtab shiftwidth=4 tabstop=4:
-#
-# Copyright 2016 Red Hat, Inc.
+# Copyright 2016-2019 Red Hat, Inc.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a
 # copy of this software and associated documentation files (the "Software"),
@@ -195,7 +193,7 @@ class _RatbagdDBus(GObject.GObject):
         # args to .Set are "interface name", "function name",  value-variant
         val = GLib.Variant("{}".format(type), value)
         if readwrite:
-            pval = GLib.Variant("(ssv)".format(type), (self._interface, property, val))
+            pval = GLib.Variant("(ssv)", (self._interface, property, val))
             self._proxy.call_sync("org.freedesktop.DBus.Properties.Set",
                                   pval, Gio.DBusCallFlags.NO_AUTO_START,
                                   2000, None)
@@ -252,11 +250,13 @@ class Ratbagd(_RatbagdDBus):
 
     def __init__(self, api_version):
         super().__init__("Manager", None)
-        result = self._get_dbus_property("Devices") or []
-        self._devices = [RatbagdDevice(objpath) for objpath in result]
-        self._proxy.connect("notify::g-name-owner", self._on_name_owner_changed)
+        result = self._get_dbus_property("Devices")
+        if result is None and not self._proxy.get_cached_property_names():
+            raise RatbagdUnavailable("Make sure it is running and your user is in the required groups.")
         if self.api_version != api_version:
             raise RatbagdIncompatible(self.api_version or -1, api_version)
+        self._devices = [RatbagdDevice(objpath) for objpath in result or []]
+        self._proxy.connect("notify::g-name-owner", self._on_name_owner_changed)
 
     def _on_name_owner_changed(self, *kwargs):
         self.emit("daemon-disappeared")
@@ -428,7 +428,7 @@ class RatbagdProfile(_RatbagdDBus):
         """The capabilities of this profile as an array. Capabilities not
         present on the profile are not in the list. Thus use e.g.
 
-        if RatbagdProfile.CAP_WRITABLE_NAME is in profile.capabilities:
+        if RatbagdProfile.CAP_WRITABLE_NAME in profile.capabilities:
             do something
         """
         return self._get_dbus_property("Capabilities") or []

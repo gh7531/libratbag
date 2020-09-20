@@ -29,6 +29,7 @@
 
 #include <assert.h>
 #include <errno.h>
+#include <libgen.h>
 #include <libratbag.h>
 #include <libudev.h>
 #include <stdio.h>
@@ -356,6 +357,7 @@ static int ratbagd_new(struct ratbagd **out)
 	if (r < 0)
 		return r;
 
+	log_verbose("Initializing libratbag\n");
 	ctx->lib_ctx = ratbag_create_context(&ratbagd_lib_interface, ctx);
 	if (!ctx->lib_ctx)
 		return -ENOMEM;
@@ -520,6 +522,8 @@ static int ratbagd_run(struct ratbagd *ctx)
 			  ctx);
 	sd_event_add_post(ctx->event, NULL, before_idle_cb, ctx);
 
+	log_verbose("DBus server ready\n");
+
 	return sd_event_loop(ctx->event);
 }
 
@@ -544,6 +548,13 @@ static bool install_ratbagd_devel_dbus_policy(void)
 		log_error("Failed to source policy file: %m\n");
 		goto out;
 	}
+
+	if (mkdir_p(dirname(strdupa(DBUS_POLICY_DST)), 0755)) {
+		log_error("Failed to create destination path: %m\n");
+		goto out;
+	}
+
+
 	out = open(DBUS_POLICY_DST, O_CREAT|O_WRONLY, 0644);
 	if (out == -1) {
 		log_error("Failed to open destination: %m\n");

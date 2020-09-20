@@ -27,6 +27,25 @@ import os
 import sys
 import configparser
 
+# see the IDs from
+# https://github.com/torvalds/linux/blob/master/drivers/hid/hid-ids.h#L772
+# https://github.com/torvalds/linux/blob/master/drivers/hid/hid-logitech-dj.c#L1826
+logitech_receivers = [
+    0xc50c,  # USB_DEVICE_ID_S510_RECEIVER
+    0xc517,  # USB_DEVICE_ID_S510_RECEIVER_2
+    0xc512,  # USB_DEVICE_ID_LOGITECH_CORDLESS_DESKTOP_LX500
+    0xc513,  # USB_DEVICE_ID_MX3000_RECEIVER
+    0xc51b,  # USB_DEVICE_ID_LOGITECH_27MHZ_MOUSE_RECEIVER
+    0xc52b,  # USB_DEVICE_ID_LOGITECH_UNIFYING_RECEIVER
+    0xc52f,  # USB_DEVICE_ID_LOGITECH_NANO_RECEIVER
+    0xc532,  # USB_DEVICE_ID_LOGITECH_UNIFYING_RECEIVER_2
+    0xc534,  # USB_DEVICE_ID_LOGITECH_NANO_RECEIVER_2
+    0xc539,  # USB_DEVICE_ID_LOGITECH_NANO_RECEIVER_LIGHTSPEED_1
+    0xc53f,  # USB_DEVICE_ID_LOGITECH_NANO_RECEIVER_LIGHTSPEED_1_1
+    0xc53a,  # USB_DEVICE_ID_LOGITECH_NANO_RECEIVER_POWERPLAY
+]
+RECEIVERS = ['usb:046d:{}'.format(r) for r in logitech_receivers]
+
 
 def parse_data_file(path):
     data = configparser.ConfigParser(strict=True)
@@ -39,19 +58,17 @@ def parse_data_file(path):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Device duplicate match checker')
+    parser = argparse.ArgumentParser(description='Checks that no unifying receiver ID is in the device files')
     parser.add_argument('file', nargs='+')
     args = parser.parse_args()
-    device_matches = {}
-    duplicates = False
+    receiver_found = False
     for path in args.file:
         matches = parse_data_file(path)
         fname = os.path.basename(path)
         for m in matches:
-            if m in device_matches:
-                print('Duplicate DeviceMatch={} in {} and {}'.format(m, fname, device_matches[m]))
-                duplicates = True
-            device_matches[m] = fname
+            if m in RECEIVERS:
+                print('Receiver ID {} found in file {}'.format(m, fname))
+                receiver_found = True
 
-    if duplicates:
+    if receiver_found:
         sys.exit(1)
